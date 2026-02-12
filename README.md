@@ -11,35 +11,52 @@ An agentic intelligence layer for [VGAC](https://vgac.cloud) GPU observability p
 
 Most AI agents are equally confident everywhere—and wrong. They have no mechanism to detect when they're operating outside their training distribution.
 
-## Our Solution
+**Real-world impact:** A prediction model trained on Kubernetes shows 22× calibration degradation when deployed on Slurm HPC clusters. The model still outputs confident predictions, but they're unreliable.
 
-VGAC agents implement **environment-aware calibration**:
-- Track accuracy per GPU environment (EKS, Slurm, Batch)
-- Detect when predictions are unreliable
-- Reduce autonomy when calibration drifts
-- Request human validation in unfamiliar environments
+## Our Solution: Calibration-Aware Agents
 
-This is grounded in research showing **22× calibration degradation** across different GPU schedulers.
+VGAC agents implement **environment-aware calibration** that adapts autonomy based on prediction reliability:
 
-## Architecture
+### Core Innovation
+1. **Per-Environment Calibration Tracking** - Monitor Expected Calibration Error (ECE) for each GPU scheduler (EKS, Slurm, Batch)
+2. **Confidence-Gated Actions** - Reduce autonomy when calibration drifts
+3. **Drift Detection** - Trigger recalibration when accuracy degrades
+4. **Learning Mode** - Request human validation in unfamiliar environments
 
+### Why This Matters
+- Prevents autonomous agents from taking wrong actions with high confidence
+- Detects distribution shift in production
+- Maintains trust through transparency about uncertainty
+- Scales to new environments safely
+
+## Agent Workflow
+
+### Scenario: New GPU Job Submitted
+
+```mermaid
+graph TD
+    A[Job Submitted] --> B[ObserverAgent: Get cluster state]
+    B --> C[PredictorAgent: Check calibration]
+    C --> D{Calibration Score?}
+    D -->|> 0.85| E[PredictorAgent: Predict wait time]
+    D -->|0.60-0.85| F[PredictorAgent: Predict with uncertainty]
+    D -->|< 0.60| G[Escalate to human]
+    E --> H[ActorAgent: Execute action autonomously]
+    F --> I[ActorAgent: Execute + notify human]
+    H --> J[CalibratorAgent: Track outcome]
+    I --> J
+    J --> K{Drift detected?}
+    K -->|Yes| L[Trigger recalibration]
+    K -->|No| M[Continue monitoring]
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        vgac.cloud (existing)                    │
-│   Prediction Engine │ Collectors │ Policy Generator            │
-└───────────────────────────────┬─────────────────────────────────┘
-                                │ HTTP/REST
-┌───────────────────────────────┴─────────────────────────────────┐
-│                    AGENTIC LAYER (this project)                 │
-│                                                                 │
-│   ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐  │
-│   │ Observer  │  │ Predictor │  │   Actor   │  │Calibrator │  │
-│   │   Agent   │  │   Agent   │  │   Agent   │  │   Agent   │  │
-│   └───────────┘  └───────────┘  └───────────┘  └───────────┘  │
-│                         │                                       │
-│              Bedrock AgentCore Orchestrator                     │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+**Step-by-step:**
+1. **ObserverAgent** monitors cluster state (queue depth, GPU utilization)
+2. **PredictorAgent** checks calibration score for the cluster
+3. **PredictorAgent** predicts wait time with confidence based on calibration
+4. **ActorAgent** gates action execution based on confidence level
+5. **CalibratorAgent** tracks prediction accuracy and detects drift
+6. If drift detected, reduce autonomy and trigger recalibration
 
 ## Agents
 
@@ -73,12 +90,54 @@ This is grounded in research showing **22× calibration degradation** across dif
 - AWS Batch
 - Unified telemetry schema
 
-## Confidence Gating
+## How It Works
 
+### 1. Calibration Monitoring
+```python
+# CalibratorAgent continuously monitors prediction accuracy
+calibration_state = await get_calibration_state("eks-prod-gpu")
+# ECE: 0.018 (baseline) → 0.036 (2× drift detected)
+
+drift = check_calibration_drift(current_ece=0.036, baseline_ece=0.018)
+# drift_ratio: 2.0, action: "monitor"
 ```
-Calibration > 0.85  →  Autonomous action
-0.60 < Cal < 0.85   →  Act + notify human  
-Calibration < 0.60  →  Escalate only, no autonomous action
+
+### 2. Confidence-Gated Predictions
+```python
+# PredictorAgent checks calibration before predicting
+prediction = await predictor.predict_with_calibration(
+    job_id="gpu-job-123",
+    cluster_id="eks-prod-gpu"
+)
+
+# If calibration < 0.60: Return "predictions unreliable"
+# If calibration 0.60-0.85: Predict with uncertainty flag
+# If calibration > 0.85: Predict with full confidence
+```
+
+### 3. Action Gating
+```python
+# ActorAgent gates actions based on calibration
+result = await actor.execute_with_gating(
+    cluster_id="eks-prod-gpu",
+    action="tool_requeue_job",
+    parameters={"job_id": "gpu-job-123", "target_queue": "low-priority"}
+)
+
+# Calibration > 0.85: Execute autonomously
+# Calibration 0.60-0.85: Execute + notify human via Slack
+# Calibration < 0.60: Escalate to human, don't execute
+```
+
+### 4. Drift Detection & Recalibration
+```python
+# When drift exceeds threshold, trigger recalibration
+if drift_ratio > 2.0:
+    await calibrator.invoke_tool(
+        "tool_trigger_recalibration",
+        {"cluster_id": "slurm-hpc-01", "reason": "ECE increased 2.1× from baseline"}
+    )
+    # Reduces agent autonomy until model is retrained
 ```
 
 ## Quick Start
@@ -172,26 +231,85 @@ vgac-agenti/
 - `lambdas/` - Lambda function handlers
 - `infrastructure/` - SAM/CloudFormation templates
 
-## Technology Stack
+## Technology Stack & Tools
 
-### Development
-- **Python 3.11+** - Core language
-- **Kiro** - AI-powered development assistant
-- **Pytest** - Testing framework
-- **Ruff** - Fast Python linter
-- **MyPy** - Static type checking
+### Core Technologies
+- **Python 3.11+** - Agent implementation
+- **AWS Bedrock AgentCore** - Multi-agent orchestration
+- **AWS Bedrock (Claude Haiku)** - Agent reasoning engine
+- **AWS Lambda** - Serverless execution
+- **AWS DynamoDB** - Calibration state persistence
 
-### AWS Services (Deployment)
-- **AWS Bedrock AgentCore** - Agent orchestration
-- **AWS Bedrock (Claude Haiku)** - Agent reasoning
-- **AWS Lambda** - Serverless compute
-- **AWS DynamoDB** - Calibration state storage
-- **AWS SAM** - Infrastructure as code
+### Development Tools
+- **Kiro AI** - AI-powered development assistant
+  - Automated code generation with context awareness
+  - Built-in skills for VGAC platform integration
+  - Agent pattern templates and best practices
+- **Pytest** - Testing framework with async support
+- **Ruff** - Fast Python linter and formatter
+- **MyPy** - Static type checking for reliability
 
-### Integrations
-- **VGAC Platform** - GPU observability and prediction
-- **Slack** - User notifications and alerts
-- **Kubernetes** - Job scheduling integration
+### Integration Points
+- **VGAC Platform** - GPU observability and prediction engine
+  - REST API for predictions, cluster state, calibration metrics
+  - Production model: 0.801 AUROC, <10ms inference
+- **Slack** - Human-in-the-loop notifications
+- **Kubernetes** - Job scheduling and admission control
+
+## Building with Kiro AI
+
+This project was built using [Kiro](https://kiro.ai), an AI-powered development assistant. Kiro accelerated development through:
+
+### 1. Context-Aware Code Generation
+Kiro maintains project context in `.kiro/` directory:
+- **Skills** - Domain knowledge (VGAC APIs, agent patterns, calibration logic)
+- **Rules** - Code standards, AWS constraints, testing requirements
+- **Project context** - Architecture decisions and design patterns
+
+### 2. Automated Agent Scaffolding
+```bash
+# Kiro generated agent base classes with:
+# - Tool definitions for Bedrock AgentCore
+# - Async/await patterns for Lambda
+# - Type hints and documentation
+# - Test stubs with fixtures
+```
+
+### 3. VGAC Platform Integration
+Kiro mapped the VGAC platform structure and generated:
+- API client code with proper error handling
+- Data models matching VGAC schemas
+- Integration tests with mocked responses
+
+### 4. Iterative Refinement
+- Real-time code suggestions based on project patterns
+- Automatic refactoring when patterns change
+- Documentation generation from code
+
+**Result:** Faster development with consistent code quality and comprehensive documentation.
+
+## Development Status
+
+### ✅ Completed
+- [x] Agent architecture and base classes
+- [x] Calibration logic with confidence gating
+- [x] Drift detection algorithms
+- [x] Kiro skills for VGAC platform integration
+- [x] Project documentation and README
+- [x] Test framework setup
+
+### 🚧 In Progress
+- [ ] VGAC API client implementation
+- [ ] Bedrock AgentCore integration
+- [ ] Tool definitions for each agent
+- [ ] Lambda handlers and deployment infrastructure
+
+### 📋 Planned
+- [ ] Slack notification integration
+- [ ] DynamoDB state management
+- [ ] End-to-end integration tests
+- [ ] Production deployment to AWS
+- [ ] Monitoring and observability
 
 ## VGAC Platform Integration
 
@@ -210,31 +328,6 @@ This agentic layer wraps the existing VGAC platform via REST APIs:
 - `GET /api/jobs/predict/calibration` - Calibration metrics
 
 See `.kiro/skills/vgac-context.md` for complete API documentation.
-
-## Cost Estimate
-
-Total estimated: **$150** (within $200 AWS AIdeas budget)
-
-| Component | Service | Monthly Cost |
-|-----------|---------|--------------|
-| Agent orchestration | Bedrock AgentCore | $50 |
-| Agent reasoning | Bedrock Claude Haiku | $35 |
-| Compute | Lambda (1M requests) | Free tier |
-| Storage | DynamoDB (25GB) | Free tier |
-| Testing buffer | Development/testing | $65 |
-
-## Development Status
-
-- [x] Agent base classes and interfaces
-- [x] Calibration logic and confidence gating
-- [x] Kiro skills and project documentation
-- [ ] VGAC API client implementation
-- [ ] Bedrock AgentCore integration
-- [ ] Lambda handlers and deployment
-- [ ] Slack notification integration
-- [ ] DynamoDB state management
-- [ ] End-to-end testing
-- [ ] Production deployment
 
 ## Contributing
 
