@@ -13,14 +13,50 @@ Most AI agents are equally confident everywhere—and wrong. They have no mechan
 
 **Real-world impact:** A prediction model trained on Kubernetes shows 22× calibration degradation when deployed on Slurm HPC clusters. The model still outputs confident predictions, but they're unreliable.
 
+## Research Foundation
+
+This work builds on empirical research in GPU queue prediction and calibration:
+
+### Published Research
+📄 **[Calibration Under Extreme Imbalance: A Multi-Cluster Benchmark for Operational Queue Delay Prediction](https://www.techrxiv.org/users/1021504/articles/1382525-calibration-under-extreme-imbalance-a-multi-cluster-benchmark-for-operational-queue-delay-prediction?commit=f538a3c4fb)**
+- Demonstrates 22× calibration degradation across GPU schedulers
+- Establishes ECE baseline of 0.018 for production models
+- Multi-cluster benchmark across K8s, Slurm, AWS Batch
+
+### In Progress
+📝 **Paper 2: "Reliability-First Queue Risk Prediction for GPU Clusters"**
+- Conference draft → Journal expansion (target ~1,300 lines)
+- Evaluates 1.2M EKS jobs + 555 Slurm HPC jobs
+- Defines 4-SLI framework: discrimination (AUROC/AUPRC), calibration (ECE/MCE), proper scoring (Brier), tail calibration
+
+**Key Findings:**
+- Feature richness > model complexity (LR with 23 features beats GB with 9)
+- Discrimination ≠ calibration (RF: AUROC 0.991, ECE 0.068 - worst calibration)
+- Cross-cluster asymmetry: AUROC degrades ~8%, ECE degrades 22×
+- Gradient Boosting dominates calibration (ECE: 0.004, 0.002, 0.000)
+
+📝 **Paper 3: "From Calibrated Probabilities to Scheduling Decisions"**
+- Conference draft (~400 lines)
+- Decision-theoretic bridge: Given calibrated probability p̂, what should the scheduler DO?
+- Defines 4 graduated intervention tiers with calibration prerequisites:
+
+| Tier | Action | Threshold | ECE Required |
+|------|--------|-----------|--------------|
+| 1 | Annotate (add risk label) | ≥ 0.3 | ≤ 0.10 |
+| 2 | Warn (notify user) | ≥ 0.5 | ≤ 0.07 |
+| 3 | Suggest (recommend reschedule) | ≥ 0.7 | ≤ 0.05 |
+| 4 | Gate (block/require confirm) | ≥ 0.9 | ≤ 0.03 |
+
+**Key Insight:** Honest tier qualification - A model with AUROC 0.756 but ECE 0.077 qualifies for Tiers 1-2 only. AUROC-only evaluation would miss this safety constraint entirely.
+
 ## Our Solution: Calibration-Aware Agents
 
 VGAC agents implement **environment-aware calibration** that adapts autonomy based on prediction reliability:
 
 ### Core Innovation
 1. **Per-Environment Calibration Tracking** - Monitor Expected Calibration Error (ECE) for each GPU scheduler (EKS, Slurm, Batch)
-2. **Confidence-Gated Actions** - Reduce autonomy when calibration drifts
-3. **Drift Detection** - Trigger recalibration when accuracy degrades
+2. **Confidence-Gated Actions** - Reduce autonomy when calibration drifts (implements Paper 3's tier system)
+3. **Drift Detection** - Trigger recalibration when accuracy degrades (22× threshold from Paper 1)
 4. **Learning Mode** - Request human validation in unfamiliar environments
 
 ### Why This Matters
@@ -75,14 +111,18 @@ graph TD
 - Maintain per-cluster calibration profiles
 
 ### 2. Confidence-Gated Actions
-- **High confidence (>0.85)**: Autonomous action
-- **Medium confidence (0.60-0.85)**: Act + notify human
-- **Low confidence (<0.60)**: Escalate only, no autonomous action
+- **High confidence (>0.85)**: Autonomous action (Tier 4 from Paper 3)
+- **Medium confidence (0.60-0.85)**: Act + notify human (Tiers 2-3)
+- **Low confidence (<0.60)**: Escalate only, no autonomous action (Tier 1)
+
+**Research basis:** Implements the graduated intervention framework from "From Calibrated Probabilities to Scheduling Decisions" with ECE-based tier qualification.
 
 ### 3. Drift Detection
 - Monitor Expected Calibration Error (ECE) vs baseline (0.018)
 - Trigger recalibration when drift exceeds 2× baseline
 - Learning mode for new environments (<50 samples)
+
+**Research basis:** ECE baseline and 22× degradation threshold from "Calibration Under Extreme Imbalance" multi-cluster benchmark.
 
 ### 4. Multi-Platform Support
 - Kubernetes (EKS)
@@ -342,3 +382,4 @@ MIT
 - Built with [Kiro](https://kiro.ai) AI-powered development
 - VGAC platform for GPU observability
 - AWS Bedrock for agent orchestration
+- Research foundation from multi-cluster calibration studies
