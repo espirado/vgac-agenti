@@ -2,8 +2,8 @@
 
 An agentic intelligence layer for [VGAC](https://vgac.cloud) GPU observability platform.
 
-**Competition:** AWS AIdeas 2025  
-**Deadline:** March 13, 2025  
+**Competition:** AWS AIdeas 2026  
+**Deadline:** March 13, 2026  
 **Budget:** $200 AWS credits  
 **Repository:** https://github.com/espirado/vgac-agenti
 
@@ -331,7 +331,7 @@ See `.kiro/skills/vgac-context.md` for complete API documentation.
 
 ## Contributing
 
-This project is being developed for AWS AIdeas 2025 competition. Contributions welcome after initial submission.
+This project is being developed for AWS AIdeas 2026 competition. Contributions welcome after initial submission.
 
 ## License
 
